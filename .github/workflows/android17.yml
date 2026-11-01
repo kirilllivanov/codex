@@ -60,7 +60,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --install "platforms;android-${ANDROID_API}" "ndk;${NDK_VERSION}"
+          sdkmanager --install "platforms;android-${ANDROID_API}.0" "ndk;${NDK_VERSION}"
           sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
           ndk="${sdk_root}/ndk/${NDK_VERSION}"
           llvm="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin"
