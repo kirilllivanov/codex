@@ -1,0 +1,102 @@
+name: Android 17 (NDK r30)
+
+on:
+  push:
+    branches:
+      - ci/android17-ndk-r30
+  pull_request:
+    paths:
+      - '.github/workflows/android17.yml'
+      - 'codex-rs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android17-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-arm64:
+    name: Codex CLI / Android 17 / arm64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      ANDROID_API: '37'
+      NDK_VERSION: '30.0.16248370'
+      TARGET: aarch64-linux-android
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      # Android prebuilt archives are not provided by our patched rusty_v8.
+      V8_FROM_SOURCE: '1'
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential clang cmake ninja-build pkg-config libclang-dev protobuf-compiler
+
+      - name: Install Android 17 SDK and NDK r30
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platforms;android-${ANDROID_API}" "ndk;${NDK_VERSION}"
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+          ndk="${sdk_root}/ndk/${NDK_VERSION}"
+          llvm="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "${llvm}/aarch64-linux-android${ANDROID_API}-clang"
+          echo "ANDROID_NDK_HOME=${ndk}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${ndk}" >> "${GITHUB_ENV}"
+          echo "CLANG_BASE_PATH=${ndk}/toolchains/llvm/prebuilt/linux-x86_64" >> "${GITHUB_ENV}"
+          echo "CC_aarch64_linux_android=${llvm}/aarch64-linux-android${ANDROID_API}-clang" >> "${GITHUB_ENV}"
+          echo "CXX_aarch64_linux_android=${llvm}/aarch64-linux-android${ANDROID_API}-clang++" >> "${GITHUB_ENV}"
+          echo "AR_aarch64_linux_android=${llvm}/llvm-ar" >> "${GITHUB_ENV}"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${llvm}/aarch64-linux-android${ANDROID_API}-clang" >> "${GITHUB_ENV}"
+          echo "${llvm}" >> "${GITHUB_PATH}"
+          "${llvm}/clang" --version | head -n 1
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cross-compile Codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "${TARGET}" \
+            -p codex-cli --bin codex -j 2
+
+      - name: Check Android ELF and package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${TARGET}/release/codex"
+          test -s "${bin}"
+          file "${bin}"
+          "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -h "${bin}" | grep -E 'Class:|Machine:'
+          mkdir -p dist
+          cp "${bin}" dist/codex
+          sha256sum dist/codex > dist/SHA256SUMS
+          tar -czf dist/codex-android17-aarch64.tar.gz -C dist codex SHA256SUMS
+
+      - name: Upload Android CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-android17-aarch64-ndk-r30
+          path: codex-rs/dist/codex-android17-aarch64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
