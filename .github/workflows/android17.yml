@@ -74,7 +74,7 @@ jobs:
           echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${llvm}/aarch64-linux-android${ANDROID_API}-clang" >> "${GITHUB_ENV}"
           builtins="$(find "${ndk}/toolchains/llvm/prebuilt/linux-x86_64" -name libclang_rt.builtins-aarch64-android.a -print -quit)"
           test -n "${builtins}"
-          echo 'CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-Clink-arg=-lc++_shared -Clink-arg=-Wl,-rpath,\$ORIGIN -Clink-arg='"${builtins}" >> "${GITHUB_ENV}"
+          echo 'CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-Clink-arg=-lc++_shared -Clink-arg=-Wl,-rpath,$ORIGIN -Clink-arg='"${builtins}" >> "${GITHUB_ENV}"
           echo "${llvm}" >> "${GITHUB_PATH}"
           "${llvm}/clang" --version | head -n 1
 
