@@ -83,6 +83,28 @@ jobs:
         with:
           targets: aarch64-linux-android
 
+      - name: Build OpenSSL 3.5.9 for Android ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl_src="${RUNNER_TEMP}/openssl-src"
+          openssl_install="${RUNNER_TEMP}/openssl-android"
+          mkdir -p "${openssl_src}"
+          # Pin OpenSSL 3.5.9 to its exact upstream release commit.
+          curl --fail --location --retry 3 \
+            "https://codeload.github.com/openssl/openssl/tar.gz/45e844fa2a14ec92d146bd8f5778ac130b6625fb" \
+            -o "${RUNNER_TEMP}/openssl.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/openssl.tar.gz" --strip-components=1 -C "${openssl_src}"
+          cd "${openssl_src}"
+          ./Configure android-arm64 "-D__ANDROID_API__=${ANDROID_API}" \
+            no-shared no-tests no-module \
+            --prefix="${openssl_install}" --openssldir="${openssl_install}/ssl"
+          make -j 2
+          make install_sw
+          test -s "${openssl_install}/lib64/libssl.a" || test -s "${openssl_install}/lib/libssl.a"
+          echo "OPENSSL_DIR=${openssl_install}" >> "${GITHUB_ENV}"
+          echo "OPENSSL_STATIC=1" >> "${GITHUB_ENV}"
+
       - name: Cross-compile Codex CLI
         shell: bash
         run: |
