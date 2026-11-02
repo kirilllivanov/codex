@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - ci/android17-ndk-r30
+      - ci/android17-ndk-r30-openssl
   pull_request:
     paths:
       - '.github/workflows/android17.yml'
