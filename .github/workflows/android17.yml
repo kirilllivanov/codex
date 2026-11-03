@@ -1,0 +1,160 @@
+name: Codex 0.166.0 / Android 17 (NDK r30, static C++)
+
+# Only run the dedicated Android ARM64 cross-build on the experiment branch.
+# A pull request would also trigger unrelated repository-wide CI matrices.
+on:
+  push:
+    branches:
+      - ci/android17-v0.166.0-arm64
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android17-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android-arm64:
+    name: Codex CLI 0.166.0 / Android 17 / arm64
+    # Dedicated release-based Android branch runs only this Ubuntu job.
+    # Do not run the macOS, Windows, Bazel, or V8 PR matrices for build debugging.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+    env:
+      ANDROID_API: '37'
+      NDK_VERSION: '30.0.16248370'
+      TARGET: aarch64-linux-android
+      # Rust 1.98 implements std::fs::File locking on Android. The workspace
+      # rust-toolchain.toml still pins 1.95 for other platforms; override only here.
+      RUSTUP_TOOLCHAIN: '1.98.0'
+      CARGO_NET_GIT_FETCH_WITH_CLI: 'true'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      # Android prebuilts are not provided by the pinned rusty_v8 dependency.
+      V8_FROM_SOURCE: '1'
+      LIBLZMA_NO_PKG_CONFIG: '1'
+      OPENSSL_NO_PKG_CONFIG: '1'
+      CODEX_SKIP_VENDORED_BWRAP: '1'
+
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install native build prerequisites
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential clang cmake ninja-build pkg-config libclang-dev protobuf-compiler
+
+      - name: Set up Android SDK command-line tools
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd # v4.0.4
+        with:
+          packages: ''
+
+      - name: Install Android 17 SDK and NDK r30
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platforms;android-${ANDROID_API}.0" "ndk;${NDK_VERSION}"
+          sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME}}"
+          ndk="${sdk_root}/ndk/${NDK_VERSION}"
+          llvm="${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "${llvm}/aarch64-linux-android${ANDROID_API}-clang"
+          test -x "${llvm}/aarch64-linux-android${ANDROID_API}-clang++"
+          test -s "${ndk}/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/libc++_static.a"
+          echo "ANDROID_NDK_HOME=${ndk}" >> "${GITHUB_ENV}"
+          echo "ANDROID_NDK_ROOT=${ndk}" >> "${GITHUB_ENV}"
+          echo "CLANG_BASE_PATH=${ndk}/toolchains/llvm/prebuilt/linux-x86_64" >> "${GITHUB_ENV}"
+          echo "CC_aarch64_linux_android=${llvm}/aarch64-linux-android${ANDROID_API}-clang" >> "${GITHUB_ENV}"
+          echo "CXX_aarch64_linux_android=${llvm}/aarch64-linux-android${ANDROID_API}-clang++" >> "${GITHUB_ENV}"
+          echo "AR_aarch64_linux_android=${llvm}/llvm-ar" >> "${GITHUB_ENV}"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=${llvm}/aarch64-linux-android${ANDROID_API}-clang++" >> "${GITHUB_ENV}"
+          builtins="$(find "${ndk}/toolchains/llvm/prebuilt/linux-x86_64" -name libclang_rt.builtins-aarch64-android.a -print -quit)"
+          test -n "${builtins}"
+          echo 'CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-Clink-arg=-static-libstdc++ -Clink-arg=-lc++_static -Clink-arg=-Wl,-z,max-page-size=16384 -Clink-arg='"${builtins}" >> "${GITHUB_ENV}"
+          echo "${llvm}" >> "${GITHUB_PATH}"
+          "${llvm}/clang" --version | head -n 1
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@5059963b1731bf1580991b5f3b1eecfb5da406c0 # 1.98.0
+        with:
+          targets: aarch64-linux-android
+
+      - name: Verify Rust 1.98 Android std support
+        run: |
+          set -euo pipefail
+          rustc --version
+          test "$(rustc --version | awk '{print $2}')" = '1.98.0'
+          rustc --print target-libdir --target "${TARGET}" | xargs test -d
+
+      - name: Build OpenSSL 3.5.9 for Android ARM64
+        shell: bash
+        run: |
+          set -euo pipefail
+          openssl_src="${RUNNER_TEMP}/openssl-src"
+          openssl_install="${RUNNER_TEMP}/openssl-android"
+          mkdir -p "${openssl_src}"
+          # Pin OpenSSL 3.5.9 to its exact upstream release commit.
+          curl --fail --location --retry 3 \
+            "https://codeload.github.com/openssl/openssl/tar.gz/45e844fa2a14ec92d146bd8f5778ac130b6625fb" \
+            -o "${RUNNER_TEMP}/openssl.tar.gz"
+          tar -xzf "${RUNNER_TEMP}/openssl.tar.gz" --strip-components=1 -C "${openssl_src}"
+          cd "${openssl_src}"
+          ./Configure android-arm64 "-D__ANDROID_API__=${ANDROID_API}" \
+            "-Wl,-z,max-page-size=16384" \
+            no-shared no-tests no-module \
+            --prefix="${openssl_install}" --openssldir="${openssl_install}/ssl"
+          make -j 2
+          make install_sw
+          test -s "${openssl_install}/lib64/libssl.a" || test -s "${openssl_install}/lib/libssl.a"
+          echo "OPENSSL_DIR=${openssl_install}" >> "${GITHUB_ENV}"
+          echo "OPENSSL_STATIC=1" >> "${GITHUB_ENV}"
+
+      - name: Cross-compile Codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The stable release lockfile may require Cargo 1.98 to reconcile
+          # platform-specific dependency metadata on this Android target.
+          # Keep upstream Cargo.lock in Git; allow Cargo to refresh its runner copy.
+          cargo build --release --target "${TARGET}" \
+            -p codex-cli --bin codex -j 2
+
+      - name: Check Android ELF and package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="target/${TARGET}/release/codex"
+          test -s "${bin}"
+          file "${bin}"
+          "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -h "${bin}" | grep -E 'Class:|Machine:'
+          "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" \
+            -l "${bin}" | grep -A1 LOAD
+          # libc++ must be statically linked: the final ELF must not request its shared DSO.
+          needed="$("${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf" -d "${bin}" | grep '(NEEDED)' || true)"
+          printf '%s\n' "${needed}"
+          if grep -q 'libc++_shared.so' <<< "${needed}"; then
+            echo 'ERROR: binary still depends on libc++_shared.so' >&2
+            exit 1
+          fi
+          mkdir -p dist
+          cp "${bin}" dist/codex
+          (cd dist && sha256sum codex > SHA256SUMS)
+          tar -czf dist/codex-android17-aarch64.tar.gz -C dist codex SHA256SUMS
+
+      - name: Upload Android CLI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-android17-aarch64-ndk-r30-static-cxx
+          path: codex-rs/dist/codex-android17-aarch64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
